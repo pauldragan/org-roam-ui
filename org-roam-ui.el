@@ -464,22 +464,64 @@ This database model won't be supported in the future, please consider upgrading.
      (string-match-p "cite" (nth 2 link)))
    links))
 
+;; (defun org-roam-ui--get-nodes ()
+;;   "."
+;;   (org-roam-db-query [:select [id
+;;                                 file
+;;                                 title
+;;                                 level
+;;                                 pos
+;;                                 olp
+;;                                 properties
+;;                                 (funcall group-concat tag
+;;                                          (emacsql-escape-raw ":" ))]
+;;                        :as tags
+;;                        :from nodes
+;;                        :left-join tags
+;;                        :on (= id node_id)
+;;                        :group :by id]))
+
+
+
 (defun org-roam-ui--get-nodes ()
-  "."
-  (org-roam-db-query [:select [id
-                                file
-                                title
-                                level
-                                pos
-                                olp
-                                properties
-                                (funcall group-concat tag
-                                         (emacsql-escape-raw \, ))]
-                       :as tags
-                       :from nodes
-                       :left-join tags
-                       :on (= id node_id)
-                       :group :by id]))
+  "Return Org-roam nodes with tags as a comma-separated string in the last field."
+  (let ((raw-rows (org-roam-db-query
+                   [:select [id file title level pos olp properties tag]
+                    :from nodes
+                    :left-join tags
+                    :on (= id node_id)]))
+        (table (make-hash-table :test #'equal)))
+    ;; Accumulate tags per node
+    (dolist (row raw-rows)
+      (cl-destructuring-bind (id file title level pos olp props tag) row
+        (let ((clean-tag (when tag (substring-no-properties tag))))
+          (if-let ((entry (gethash id table)))
+              (when clean-tag
+                (push clean-tag (cdr (assoc 'tags entry))))
+            (puthash id
+                     `((id . ,id)
+                       (file . ,file)
+                       (title . ,title)
+                       (level . ,level)
+                       (pos . ,pos)
+                       (olp . ,olp)
+                       (props . ,props)
+                       (tags . ,(if clean-tag (list clean-tag) nil)))
+                     table)))))
+    ;; Convert entries to final list format
+    (mapcar (lambda (entry)
+              (let ((id     (cdr (assoc 'id entry)))
+                    (file   (cdr (assoc 'file entry)))
+                    (title  (cdr (assoc 'title entry)))
+                    (level  (cdr (assoc 'level entry)))
+                    (pos    (cdr (assoc 'pos entry)))
+                    (olp    (cdr (assoc 'olp entry)))
+                    (props  (cdr (assoc 'props entry)))
+                    (tags   (cdr (assoc 'tags entry))))
+                (list id file title level pos olp props
+                      (when tags (string-join (delete-dups tags) ",")))))
+            (hash-table-values table))))
+
 
 (defun org-roam-ui--get-links (&optional old)
   "Get the cites and links tables as rows from the org-roam db.
@@ -618,6 +660,22 @@ ROWS is the sql result, while COLUMN-NAMES is the columns to use."
               res)
         (setq rows nil)))
     res))
+
+(defun org-roam-ui-sql-to-alist (column-names rows)
+  "Convert sql result to alist for json encoding.
+ROWS is the sql result, while COLUMN-NAMES is the columns to use."
+  (let (res)
+    (while rows
+      ;; I don't know how to get the tags as a simple list, so we post process it
+      (if (not (string= (car column-names) "tags"))
+          (push (cons (pop column-names) (pop rows)) res)
+        (push (cons (pop column-names) (if (and rows (stringp (car rows)))
+    (split-string (car rows) "," t "[[:space:]]*")
+  rows))
+              res)
+        (setq rows nil)))
+    res))
+
 
 (defun org-roam-ui-get-theme ()
   "Attempt to bring the current theme into a standardized format."
